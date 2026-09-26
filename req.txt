@@ -1,2 +1,5 @@
 flask
 autogui
+uuid
+math
+cryptography
