@@ -45,10 +45,10 @@ TEXT_LINK_PREFIXES = ("youtube_", "yt_")
 CHUNK_SIZE = 128 * 2048
 ACCOUNT_FOLDER = "ACCOUNTS"
 AUTH_FOLDER = "AUTH"
-USERS_FILE_NAME = "users.json"
+USERS_FILE_NAME = "users"
 PROFILE_PICTURE_FOLDER = "PROFILE_PICTURES"
 CHAT_FOLDER = "CHAT"
-GLOBAL_CHAT_FILE_NAME = "global.json"
+GLOBAL_CHAT_FILE_NAME = "global"
 DIRECT_CHAT_FOLDER = "DIRECT"
 SESSION_COOKIE_NAME = "notflix_session"
 SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -63,16 +63,16 @@ CHAT_LOCK = threading.RLock()
 SESSIONS = {}
 RATE_LIMITS = {}
 RATE_LIMIT_LOCK = threading.Lock()
-WATCHED_FILE_NAME = "watched.json"
-CONTINUE_FILE_NAME = "continue.json"
-PLAYLISTS_FILE_NAME = "playlists.json"
-MINECRAFT_PROFILE_FILE_NAME = "minecraft.json"
-SOCIALS_FILE_NAME = "socials.json"
+WATCHED_FILE_NAME = "watched"
+CONTINUE_FILE_NAME = "continue"
+PLAYLISTS_FILE_NAME = "playlists"
+MINECRAFT_PROFILE_FILE_NAME = "minecraft"
+SOCIALS_FILE_NAME = "socials"
 SOCIALS_KEY_FILE_NAME = "socials.key"
 DRAWINGS_FOLDER = "DRAWINGS"
-DRAWINGS_CATALOG_FILE = "drawings.json"
+DRAWINGS_CATALOG_FILE = "drawings"
 FEEDBACK_FOLDER = "FEEDBACK"
-FEEDBACK_FILE_NAME = "feedback.json"
+FEEDBACK_FILE_NAME = "feedback"
 MAX_DRAWING_BYTES = 900 * 1024
 MAX_DRAWING_TITLE = 100
 MAX_FEEDBACK_LENGTH = 4000
@@ -84,7 +84,7 @@ SOCIAL_OAUTH_STATES = {}
 SOCIAL_LIVE_CACHE = {}
 SOCIAL_OAUTH_LOCK = threading.RLock()
 UPLOAD_FOLDER = "UPLOADS"
-UPLOAD_CATALOG_FILE = "uploads.json"
+UPLOAD_CATALOG_FILE = "uploads"
 MAX_UPLOAD_FILES = 10
 MAX_UPLOAD_FILE_BYTES = 192 * 1024 * 1024
 MAX_UPLOAD_TOTAL_BYTES = 256 * 1024 * 1024
@@ -690,9 +690,12 @@ def _migrate_json_file_to_database(path, default):
 
 
 def read_json_file(path, default):
+    """Compatibility API backed ONLY by SQLite; never creates a JSON file."""
     data = _db_get(path)
-    if data is not None and isinstance(data, type(default)):
-        return data
+    if data is not None:
+        if default is None or isinstance(data, type(default)):
+            return data
+        return default
     return _migrate_json_file_to_database(path, default)
 
 
