@@ -947,7 +947,7 @@ def _load_session(token):
         session = SESSIONS.get(token)
     if session:
         return session
-    session = _db_get(_session_db_key(token), None)
+    session = _db_get(_session_db_key(token))
     if isinstance(session, dict):
         with AUTH_LOCK:
             SESSIONS[token] = session
