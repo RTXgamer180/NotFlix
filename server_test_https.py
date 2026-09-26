@@ -16,7 +16,6 @@ import random
 import re
 import socket
 import sqlite3
-import ssl
 import datetime
 import ipaddress
 import threading
@@ -24,22 +23,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import webbrowser
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from PIL import Image
 
 MOVIE_FOLDER = "MOVIES_DC1"
-PORT = 9284
-HTTPS_ENABLED = True
+PORT = int(os.environ.get("PORT", "9284"))
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_FILE = str(BASE_DIR / "notflix.db")
 DATABASE_LOCK = threading.RLock()
-CERT_FOLDER = str(BASE_DIR / "HTTPS_CERT")
-CERT_FILE = os.path.join(CERT_FOLDER, "server.crt")
-KEY_FILE = os.path.join(CERT_FOLDER, "server.key")
-TLS_MINIMUM_VERSION = ssl.TLSVersion.TLSv1_2
 MAX_JSON_BODY_BYTES = 1 * 1024 * 1024
 AUTH_RATE_LIMIT = 8
 AUTH_RATE_WINDOW_SECONDS = 5 * 60
@@ -1582,9 +1575,10 @@ def oauth_redirect_uri(handler, provider):
     config = oauth_config(provider)
     if config.get("redirect_uri"):
         return config["redirect_uri"]
-    scheme = "https" if HTTPS_ENABLED else "http"
-    host = handler.headers.get("Host", f"localhost:{PORT}").split(":", 1)[0]
-    return f"{scheme}://{host}:{PORT}/socials/{provider}/callback"
+    forwarded_proto = handler.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+    scheme = forwarded_proto if forwarded_proto in {"http", "https"} else "http"
+    host = handler.headers.get("Host", f"localhost:{PORT}")
+    return f"{scheme}://{host}/socials/{provider}/callback"
 
 
 def http_form_request(url, fields, headers=None, timeout=30):
@@ -2398,111 +2392,6 @@ def render_minecraft_skin_view(profile, view_name):
     raise ValueError("Unsupported Minecraft skin view.")
 
 
-def certificate_dns_names():
-    names = {"localhost", socket.gethostname(), socket.getfqdn()}
-    return sorted(
-        name.lower()
-        for name in names
-        if name and re.fullmatch(r"[A-Za-z0-9.-]{1,253}", name)
-    )
-
-
-def certificate_ip_addresses():
-    addresses = {"127.0.0.1", "::1", get_local_ip()}
-    return sorted(
-        (ipaddress.ip_address(address) for address in addresses),
-        key=lambda address: (address.version, int(address)),
-    )
-
-
-def ensure_https_certificate():
-    """Create a local TLS certificate with names for this computer and LAN."""
-    os.makedirs(CERT_FOLDER, exist_ok=True)
-
-    if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
-        return
-
-    try:
-        from cryptography import x509
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-    except ImportError as error:
-        raise RuntimeError(
-            "A TLS certificate is missing. Install the required package with:\n"
-            "    py -m pip install cryptography\n"
-            "Then start the server again."
-        ) from error
-
-    print("Creating a local HTTPS certificate...")
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-    now = datetime.datetime.now(datetime.timezone.utc)
-    subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "NotFlix Local Server"),
-        x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
-    ])
-    alternative_names = [x509.DNSName(name) for name in certificate_dns_names()]
-    alternative_names.extend(
-        x509.IPAddress(address) for address in certificate_ip_addresses()
-    )
-    certificate = (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(issuer)
-        .public_key(private_key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(minutes=5))
-        .not_valid_after(now + datetime.timedelta(days=365))
-        .add_extension(x509.SubjectAlternativeName(alternative_names), critical=False)
-        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-        .add_extension(
-            x509.KeyUsage(
-                digital_signature=True,
-                content_commitment=False,
-                key_encipherment=True,
-                data_encipherment=False,
-                key_agreement=False,
-                key_cert_sign=False,
-                crl_sign=False,
-                encipher_only=False,
-                decipher_only=False,
-            ),
-            critical=True,
-        )
-        .add_extension(
-            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
-            critical=False,
-        )
-        .sign(private_key, hashes.SHA384())
-    )
-
-    with open(KEY_FILE, "wb") as handle:
-        handle.write(
-            private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption(),
-            )
-        )
-    try:
-        os.chmod(KEY_FILE, 0o600)
-    except OSError:
-        pass
-    with open(CERT_FILE, "wb") as handle:
-        handle.write(certificate.public_bytes(serialization.Encoding.PEM))
-
-    print(f"HTTPS certificate created: {CERT_FILE}")
-    print(f"HTTPS private key created: {KEY_FILE}")
-
-
-def build_tls_context():
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = TLS_MINIMUM_VERSION
-    context.options |= ssl.OP_NO_COMPRESSION
-    context.set_ciphers("ECDHE+AESGCM:ECDHE+CHACHA20")
-    context.load_cert_chain(CERT_FILE, KEY_FILE)
-    return context
-
 
 class Handler(BaseHTTPRequestHandler):
 
@@ -2517,8 +2406,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
-        if isinstance(self.connection, ssl.SSLSocket):
-            self.send_header("Strict-Transport-Security", "max-age=31536000")
         nonce = getattr(self, "_csp_nonce", "")
         if nonce:
             self.send_header(
@@ -2529,7 +2416,7 @@ class Handler(BaseHTTPRequestHandler):
                 "style-src 'self' 'nonce-" + nonce + "'; "
                 "img-src 'self' data: blob: https://images.unsplash.com https://i.ytimg.com; "
                 "media-src 'self' blob:; connect-src 'self'; "
-                "frame-src https://www.youtube-nocookie.com; upgrade-insecure-requests",
+                "frame-src https://www.youtube-nocookie.com",
             )
         super().end_headers()
 
@@ -6841,16 +6728,12 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     migrate_legacy_storage_to_database()
     ensure_feedback_admin_account()
-    ip = get_local_ip()
-    ensure_https_certificate()
-    url = f"https://{ip}:{PORT}"
 
+    # Render terminates HTTPS at its public edge. The Python app itself listens
+    # on plain HTTP inside the Render service, which is the expected setup.
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    server.socket = build_tls_context().wrap_socket(server.socket, server_side=True)
 
-    print(f"Running: {url}")
-    print("HTTPS is enabled. The first browser visit needs you to trust the local certificate.")
-
-    threading.Thread(target=lambda: webbrowser.open(url), daemon=True).start()
+    print(f"NotFlix server listening on 0.0.0.0:{PORT}")
+    print("Public HTTPS is provided by Render. No local certificate is created.")
 
     server.serve_forever()
