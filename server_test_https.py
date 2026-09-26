@@ -2430,15 +2430,31 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "").rstrip("/").lower()
         if not origin:
             return False
-        hosts = {"localhost", "127.0.0.1", "[::1]", get_local_ip().lower()}
-        hosts.update(name.lower() for name in certificate_dns_names())
-        allowed = {f"https://{host}:{PORT}" for host in hosts}
+
+        # Render terminates public TLS before forwarding the request to this
+        # Python HTTP service. Accept the exact public Origin/Host combination
+        # instead of relying on local certificate names.
+        forwarded_proto = self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+        forwarded_host = self.headers.get("X-Forwarded-Host", "").split(",", 1)[0].strip().lower()
+        host = forwarded_host or self.headers.get("Host", "").strip().lower()
+
+        allowed = set()
+        if host:
+            allowed.add(f"{forwarded_proto or 'http'}://{host}")
+            allowed.add(f"https://{host}")
+            allowed.add(f"http://{host}")
+
+        local_hosts = {"localhost", "127.0.0.1", "[::1]", get_local_ip().lower()}
+        for local_host in local_hosts:
+            allowed.add(f"http://{local_host}:{PORT}")
+            allowed.add(f"https://{local_host}:{PORT}")
+
         allowed.update(
             value.strip().rstrip("/").lower()
             for value in os.environ.get("NOTFLIX_ALLOWED_ORIGINS", "").split(",")
-            if value.strip().lower().startswith("https://")
+            if value.strip()
         )
-        return hmac.compare_digest(origin, next((item for item in allowed if item == origin), ""))
+        return origin in allowed
 
     def allow_request(self, bucket, maximum, window_seconds):
         now = time.monotonic()
@@ -5926,7 +5942,7 @@ class Handler(BaseHTTPRequestHandler):
           headers,
           body: formData
         });
-        const data = await response.json();
+        const data = await parseJsonResponse(response);
         if (!response.ok) {
           throw new Error(data.error || "Could not publish the upload.");
         }
@@ -6027,9 +6043,22 @@ class Handler(BaseHTTPRequestHandler):
       frame.style.display = "none";
     }
 
+    async function parseJsonResponse(response) {
+      const text = await response.text();
+      if (!text.trim()) {
+        throw new Error(`Server returned an empty response (HTTP ${response.status}).`);
+      }
+      try {
+        return JSON.parse(text);
+      } catch (error) {
+        console.error("Non-JSON server response:", text);
+        throw new Error(`Server returned invalid JSON (HTTP ${response.status}).`);
+      }
+    }
+
     async function fetchJson(url) {
       const response = await fetch(url);
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
 
       if (!response.ok) {
         throw new Error(data.error || "Request failed.");
@@ -6047,7 +6076,7 @@ class Handler(BaseHTTPRequestHandler):
         body: JSON.stringify(payload)
       });
 
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
       if (!response.ok) {
         throw new Error(data.error || "Request failed.");
       }
@@ -6114,7 +6143,7 @@ class Handler(BaseHTTPRequestHandler):
           headers,
           body: formData
         });
-        const data = await response.json();
+        const data = await parseJsonResponse(response);
         if (!response.ok) {
           throw new Error(data.error || "Could not upload the profile picture.");
         }
