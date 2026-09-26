@@ -614,6 +614,14 @@ def _db_set(path, payload):
         connection.commit()
 
 
+def _db_delete(path):
+    init_database()
+    key = _db_key(path)
+    with DATABASE_LOCK, sqlite3.connect(DATABASE_FILE) as connection:
+        connection.execute("DELETE FROM app_data WHERE data_key = ?", (key,))
+        connection.commit()
+
+
 def _blob_key(name):
     return str(name or "").replace("\\", "/").strip("/")
 
@@ -928,39 +936,68 @@ def ensure_feedback_admin_account():
     create_account(username, username)
 
 
+def _session_db_key(token):
+    return "__db__/sessions/" + str(token)
+
+
+def _load_session(token):
+    if not token:
+        return None
+    with AUTH_LOCK:
+        session = SESSIONS.get(token)
+    if session:
+        return session
+    session = _db_get(_session_db_key(token), None)
+    if isinstance(session, dict):
+        with AUTH_LOCK:
+            SESSIONS[token] = session
+        return session
+    return None
+
+
 def create_session(username):
     token = secrets.token_urlsafe(32)
+    session = {
+        "username": canonical_username(username),
+        "expiresAt": int(time.time()) + SESSION_TTL_SECONDS,
+        "csrfToken": secrets.token_urlsafe(32),
+    }
     with AUTH_LOCK:
-        SESSIONS[token] = {
-            "username": canonical_username(username),
-            "expiresAt": int(time.time()) + SESSION_TTL_SECONDS,
-            "csrfToken": secrets.token_urlsafe(32),
-        }
+        SESSIONS[token] = session
+    # Sessions must survive Render restarts/redeploys so the browser's cookie
+    # does not become useless while the cookie itself is still valid.
+    _db_set(_session_db_key(token), session)
     return token
 
 
 def get_session_csrf_token(token):
-    with AUTH_LOCK:
-        session = SESSIONS.get(token)
-        if not session or int(session.get("expiresAt") or 0) <= int(time.time()):
-            return ""
-        return str(session.get("csrfToken") or "")
+    session = _load_session(token)
+    if not session or int(session.get("expiresAt") or 0) <= int(time.time()):
+        if token:
+            with AUTH_LOCK:
+                SESSIONS.pop(token, None)
+            _db_delete(_session_db_key(token))
+        return ""
+    return str(session.get("csrfToken") or "")
 
 
 def get_session_username(token):
     if not token:
         return ""
-    with AUTH_LOCK:
-        session = SESSIONS.get(token)
-        if not session or int(session.get("expiresAt") or 0) <= int(time.time()):
+    session = _load_session(token)
+    if not session or int(session.get("expiresAt") or 0) <= int(time.time()):
+        with AUTH_LOCK:
             SESSIONS.pop(token, None)
-            return ""
-        return str(session.get("username") or "")
+        _db_delete(_session_db_key(token))
+        return ""
+    return str(session.get("username") or "")
 
 
 def remove_session(token):
     with AUTH_LOCK:
         SESSIONS.pop(token, None)
+    if token:
+        _db_delete(_session_db_key(token))
 
 
 def update_profile_picture(username, file_data):
